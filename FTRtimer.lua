@@ -21,24 +21,30 @@ local lapSwitch 	= getFieldInfo("sh").id
 local throttleChannel	= 1			-- throttle channel default is 1
 --==== ^ ^ ^ ^ =================================== ^ ^ ^ ^ ===============
 
+--vv-- Program wide variables --vv--
+local runMsg  = "- - - -"
+local STATE_IDLE = 0
+local STATE_RUNNING = 1
+
 local resetAppliedTime	= 0
 local lapSwitch_prev	= 0
 local applySwitch_prev	= 0
 local lapValuesSaved	= 0
 
+local bestLapsSet = 0
+
+--^^-- Program wide variables --^^--
+
 local chkPnt		= 0
-local maxLapCnt		= 0
+local lapsTotal		= 0
+local currentLapNumber 	= 0
 
-local curLapCnt 	= 0
-
-local bestLapTime 	= {999999,999999,999999,999999,999999,999999}
-local bestRunTime 	= {999999,999999,999999,999999,999999,999999}
+local bestLapTimes 	= {999999,999999,999999,999999,999999,999999}
+local bestRunTimes 	= {999999,999999,999999,999999,999999,999999}
 local bestRunPct 	= {99,99,99,99,99,99}
-local bestLapTimeTot	= 0
-local oldLapTimeTot	= 999999
-local difLapTimeTot	= 0
+local ultimateRunTime	= 0 -- runtime of the best laps
 
-local curLapTime	= {0,0,0,0}
+local curRunLapTimes	= {0,0,0,0}
 local curRunTime	= 0
 local curRunStartTime	= 0
 local curLapStartTime	= 0
@@ -60,13 +66,6 @@ local chkFlg = 0
 local chkTime = 0
 local chkMsg = " "
 
-local lstLapSlider = -2000
-
---vv-- Program wide variables --vv--
-local runMsg  = "- - - -"
-local STATE_IDLE = 0
-local STATE_RUNNING = 1
---^^-- Program wide variables --^^--
 
 --vv-- Helper functions --vv--
 function round(num, idp)
@@ -102,7 +101,7 @@ local function drawScreen(momentarySecs)
 	lcd.drawTimer(8, 10, timer.value, MIDSIZE +INVERS)
 	lcd.drawChannel(60,11,"vfas-min",SMLSIZE +INVERS)	--battery voltage
 	
-	lcd.drawNumber(46,28, maxLapCnt  ,SMLSIZE)		--input #laps
+	lcd.drawNumber(46,28, lapsTotal  ,SMLSIZE)		--input #laps
 	lcd.drawNumber(46,37,chkPnt,SMLSIZE)
 	if chkPnt > 0 then
 		lcd.drawNumber(64,37,chkPnt  - (chkTime - chkStart)   ,SMLSIZE) 
@@ -128,37 +127,37 @@ local function drawScreen(momentarySecs)
 	local lapRowSpc = 9
 
 	-- Best runs: first the best run with big letters and then runs 2 to 5
-	if bestRunTime[1] < 999999 then
-		lcd.drawNumber  (118,10,bestRunTime[1],MIDSIZE +PREC2)
+	if bestRunTimes[1] < 999999 then
+		lcd.drawNumber  (118,10,bestRunTimes[1],MIDSIZE +PREC2)
 		lcd.drawNumber  (81, 10,bestRunPct[1] ,SMLSIZE)
 	end
 	for idx = 2, 5, 1 do
 		lapY = lapRowStr + (idx * lapRowSpc)
-		if bestRunTime[idx] < 999999 then
-			lcd.drawNumber(118,lapY-lapRowSpc,bestRunTime[idx],SMLSIZE +PREC2) 
+		if bestRunTimes[idx] < 999999 then
+			lcd.drawNumber(118,lapY-lapRowSpc,bestRunTimes[idx],SMLSIZE +PREC2) 
 			lcd.drawNumber( 81,lapY-lapRowSpc,bestRunPct [idx],SMLSIZE)
 		end
 	end
 
 	-- Best laps: first the best total time with big letters and then runs 1 to 4
-	if bestLapTime[1] < 999999 then
-		bestLapTimeTot = 0
-		for idx = 1, maxLapCnt, 1 do
-			bestLapTimeTot = bestLapTimeTot + bestLapTime[idx]
+	if bestLapTimes[1] < 999999 then
+		ultimateRunTime = 0
+		for idx = 1, lapsTotal, 1 do
+			ultimateRunTime = ultimateRunTime + bestLapTimes[idx]
 		end
-		lcd.drawNumber(159,10,bestLapTimeTot ,MIDSIZE +PREC2  ) 
+		lcd.drawNumber(159,10,ultimateRunTime ,MIDSIZE +PREC2  ) 
 	end
 	for idx = 1, 4, 1 do
 		lapY = lapRowStr + (idx * lapRowSpc)
-		if bestLapTime[idx] < 999999 then lcd.drawNumber(155,lapY,bestLapTime[idx],SMLSIZE +PREC2) end  -- time
-		if idx <= maxLapCnt	then lcd.drawNumber(181,lapY,idx            ,SMLSIZE +INVERS) end	-- lap#
+		if bestLapTimes[idx] < 999999 then lcd.drawNumber(155,lapY,bestLapTimes[idx],SMLSIZE +PREC2) end  -- time
+		if idx <= lapsTotal	then lcd.drawNumber(181,lapY,idx            ,SMLSIZE +INVERS) end	-- lap#
 		if curThrAvg[idx] > 0	then lcd.drawNumber(172,lapY,curThrAvg[idx] ,SMLSIZE +INVERS) end	-- pct
-		if curLapTime[idx] > 0	then lcd.drawNumber(210,lapY,curLapTime[idx],SMLSIZE +PREC2 +INVERS) end-- time
+		if curRunLapTimes[idx] > 0	then lcd.drawNumber(210,lapY,curRunLapTimes[idx],SMLSIZE +PREC2 +INVERS) end-- time
 	end
 	-- Draw dots that show the time momentary switch has been kept on
-	if momentarySecs > 1 then
+	if momentarySecs > 0.5 then
 		drawNotification("      ")
-		for idx = 1, (momentarySecs -1) * 3, 1 do
+		for idx = 1, (momentarySecs - 0.5) * 4, 1 do
 			lcd.drawText(12 + (idx * 4), 55, "." ,SMLSIZE +INVERS)
 		end
 	end
@@ -191,9 +190,12 @@ local function sayRandomComment()
 end
 --^^-- Helper functions --^^--
 
+
+
 local function resetTimers()
-	curLapCnt 	= 0
-	curLapTime 	= {0,0,0,0}
+	playFile("SOUNDS/en/_squish.wav") -- reset
+	currentLapNumber 	= 0
+	curRunLapTimes 	= {0,0,0,0}
 	curRunTime 	= 0
 	curRunStartTime = 0
 	curLapStartTime = 0
@@ -201,6 +203,8 @@ local function resetTimers()
 	curThrCnt	= {0,0,0,0,0}
 	curThrAvg	= {0,0,0,0,0}
 	curThrAvgRun	= 0
+	bestLapsSet	= 0
+	lapValuesSaved	= 0
 end
 
 local function checkErrors()
@@ -225,9 +229,9 @@ local function checkErrors()
 	end
 	
 	--  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -
-	--2) cant start unless last lap was cleard maxLapcnt = 0
+	--2) cant start unless last lap was cleard lapsTotal = 0
 
-	if getValue(lapSwitch) > 0 and curLapCnt > (maxLapCnt + 1) then
+	if getValue(lapSwitch) > 0 and currentLapNumber > (lapsTotal + 1) then
 		errFlg = 2
 	else
 		clrRunFlg = 0
@@ -240,72 +244,76 @@ local function checkErrors()
 	
 end
 
-local function applyBestLap()
-	bestLapTimeTot = 0
-	for idx = 1, maxLapCnt, 1 do
-		if curLapTime[idx] > 0 and bestLapTime[idx] > curLapTime[idx] then
-			bestLapTime[idx] = curLapTime[idx]
-			bestLapTimeTot = bestLapTimeTot + bestLapTime[idx]
+local function applyBestLaps()
+	if bestLapsSet == 0 then
+		-- loop all the laps
+		for i = 1, lapsTotal, 1 do
+			-- loop all the best laps
+			for j = 1, #bestLapTimes, 1 do  -- # means the length of the array
+				-- if this lap is faster that this fastest lap 
+				if bestLapsSet < i and curRunLapTimes[i] > 0 and curRunLapTimes[i] < bestLapTimes[j] then
+					-- move all the numbers one slot forward
+					for k = #bestLapTimes, j+1, -1 do
+						bestLapTimes[k] = bestLapTimes[k-1]
+					end
+					-- inset lap into its place
+					bestLapTimes[j] = curRunLapTimes[i]
+					if j == 1 then
+						playFile("SOUNDS/en/ftr/newblap.wav") -- new best lap
+						playNumber(bestLapTimes[1]/10, 17, PREC1)	
+					end
+					-- no need to continue with the faster best laps
+					bestLapsSet = bestLapsSet + 1
+				end
+			end
 		end
 	end
-	bestLapTimeTot = 0
-	for idx = 1, maxLapCnt, 1 do		--calc best theorical run
-		bestLapTimeTot = bestLapTimeTot + bestLapTime[idx]
+	
+	local ultimateRunTime = 0
+	for idx = 1, lapsTotal, 1 do		--calc best theorical run
+		ultimateRunTime = ultimateRunTime + bestLapTimes[idx]
 	end
-	if bestLapTimeTot < oldLapTimeTot then
-		difLapTimeTot = oldLapTimeTot - bestLapTimeTot
-		if oldLapTimeTot < 999999 then
-			playNumber(difLapTimeTot/10, 17, PREC1)	--17=seconds
-			playFile("SOUNDS/en/ftr/bideal.wav")
-		end
-	end
-
-	if bestLapTimeTot < oldLapTimeTot and oldLapTimeTot < 999999 then
-		runInfo = (oldLapTimeTot - bestLapTimeTot)/10
-		runMsg  = "new Ideal "
-	end
-	oldLapTimeTot = bestLapTimeTot
+	ultimateRunTime = runTimeTotal
 end
 
 local function applyBestRun()
 	if lapValuesSaved == 1 then
-		resetTimers()
-		lapValuesSaved	= 0
+		-- resetTimers()
 	else
 		local bestIdx = 0
-		if curRunTime < bestRunTime[5] then
+		if curRunTime < bestRunTimes[5] then
 			bestIdx = 5
 		end
-		if curRunTime < bestRunTime[4] then
+		if curRunTime < bestRunTimes[4] then
 			bestIdx = 4
 			bestRunPct [5] = bestRunPct [4]
-			bestRunTime[5] = bestRunTime[4]
+			bestRunTimes[5] = bestRunTimes[4]
 		end
-		if curRunTime < bestRunTime[3] then
+		if curRunTime < bestRunTimes[3] then
 			bestIdx = 3
 			bestRunPct [4] = bestRunPct [3]
-			bestRunTime[4] = bestRunTime[3]
+			bestRunTimes[4] = bestRunTimes[3]
 		end
-		if curRunTime < bestRunTime[2] then
+		if curRunTime < bestRunTimes[2] then
 			bestIdx = 2
 			bestRunPct [3] = bestRunPct [2]
-			bestRunTime[3] = bestRunTime[2]
+			bestRunTimes[3] = bestRunTimes[2]
 		end
-		if curRunTime < bestRunTime[1] then
+		if curRunTime < bestRunTimes[1] then
 			bestIdx = 1
 			bestRunPct [2] = bestRunPct [1]
-			bestRunTime[2] = bestRunTime[1]
+			bestRunTimes[2] = bestRunTimes[1]
 		end
 	
 		if bestIdx ~=0 then
 			bestRunPct [bestIdx] = curThrAvgRun
-			bestRunTime[bestIdx] = curRunTime
+			bestRunTimes[bestIdx] = curRunTime
 		end
 	
 		if bestIdx == 1 then
 			playFile("SOUNDS/en/ftr/b1st.wav")
 			runMsg = "new best"
-			model.setGlobalVariable(7, 1, bestRunTime[1]/10 )
+			model.setGlobalVariable(7, 1, bestRunTimes[1]/10 )
 		elseif bestIdx == 2 then
 			playFile("SOUNDS/en/ftr/b2nd.wav")
 			runMsg = "2nd best"
@@ -326,48 +334,55 @@ local function applyBestRun()
 	end
 end
 
-local function applySingleLap()
-	curLapStartTime = getTime() 				--new lap, reset LAP
-
-	if curLapCnt ==  0 then
-		curRunStartTime  = getTime() --first Lap, reset RUN
+local function applySingleLap(state)
+	if currentLapNumber ==  0 then
+		curRunStartTime  = getTime()	-- first Lap, reset RUN
+		curLapStartTime = getTime()	-- reset LAP
 		runMsg  = "start"
 		playFile("SOUNDS/en/ftr/hstart.wav")
+		state = STATE_RUNNING
 	end
 
-	curLapCnt = curLapCnt + 1
-	curThrPct[curLapCnt] = 0
-	curThrCnt[curLapCnt] = 0
+	currentLapNumber = currentLapNumber + 1
+	if currentLapNumber > lapsTotal + 1 then currentLapNumber = lapsTotal + 1 end	-- keeps the number there
 
-	chkMsg = "new lap"
-	chkFlg = 0
-
-	if curLapCnt > 1 then
-		if curLapCnt == (maxLapCnt + 1) then 			-- goal
-			runMsg  = " /# GOAL"
-			playFile("SOUNDS/en/_kling.wav")
-		end
-		playNumber((getTime() - curLapStartTime)/10, 17, PREC1)	-- say the lap time (17=seconds)
-		if curLapCnt == maxLapCnt then				-- final lap
-			runMsg  = "final lap"
-			playFile("SOUNDS/en/ftr/hfinlp.wav")
-		end
-		if curLapCnt == (maxLapCnt + 1) then 			-- goal
-			playNumber((curRunTime / 10), 17, PREC1)		-- say this run time
-			if  bestRunTime [1] < 999999 then			-- if there is a best lap
-				runInfo =  -1 * ((bestRunTime[1] - curRunTime) / 10)	-- runIinfo is the difference from best
-				playNumber(runInfo, 17, PREC1)			-- say difference to best run 
-				if runInfo > 0 then				
-					runMsg  = "to go"
-					playFile("SOUNDS/en/ftr/btogo.wav")
-				else
-					runMsg  = "beat best"
-					playFile("SOUNDS/en/ftr/bnewb.wav")
-					sayRandomComment()
+	if state == STATE_RUNNING then
+		curThrPct[currentLapNumber] = 0
+		curThrCnt[currentLapNumber] = 0
+		currLapTime = 0
+		chkMsg = "new lap"
+		chkFlg = 0
+	
+		if currentLapNumber > 1 then
+			if currentLapNumber == (lapsTotal + 1) then 			-- goal
+				runMsg  = " /# GOAL"
+				playFile("SOUNDS/en/_kling.wav")
+			end
+			currLapTime = getTime() - curLapStartTime
+			playNumber(currLapTime/10, 17, PREC1)	-- say the lap time (17=seconds)
+			if currentLapNumber == lapsTotal then				-- final lap
+				runMsg  = "final lap"
+				playFile("SOUNDS/en/ftr/hfinlp.wav")
+			end
+			if currentLapNumber == (lapsTotal + 1) then 			-- goal
+				playNumber((curRunTime / 10), 17, PREC1)		-- say this run time
+				if  bestRunTimes [1] < 999999 then			-- if there is a best lap
+					runInfo =  -1 * ((bestRunTimes[1] - curRunTime) / 10)	-- runIinfo is the difference from best
+					playNumber(runInfo, 17, PREC1)			-- say difference to best run 
+					if runInfo > 0 then				
+						runMsg  = "to go"
+						playFile("SOUNDS/en/ftr/btogo.wav")
+					else
+						runMsg  = "beat best"
+						playFile("SOUNDS/en/ftr/bnewb.wav")
+						sayRandomComment()
+					end
 				end
 			end
 		end
 	end
+	curLapStartTime = getTime() 				--new lap, reset LAP
+	return state
 end
 
 --vv-- Main function that gets repeated --vv--
@@ -375,7 +390,7 @@ local function run()
 	lcd.clear()
 	local state = STATE_IDLE
 
-	if curLapCnt > 0 and curLapCnt <= maxLapCnt and errFlg == 0 then -- are currently flying laps
+	if currentLapNumber > 0 and currentLapNumber <= lapsTotal and errFlg == 0 then -- are currently flying laps
 		state = STATE_RUNNING
 	else
 		state = STATE_IDLE
@@ -386,11 +401,11 @@ local function run()
 		---- User Inputs from Sliders
 		-----------------------------------------------------
 		--# laps righthand side
-		if getValue(lapSlider) < -500 then maxLapCnt = 1 
-		elseif getValue(lapSlider) < 1 then maxLapCnt = 2 
-		elseif getValue(lapSlider) < 500  then maxLapCnt = 3 
+		if getValue(lapSlider) < -500 then lapsTotal = 1 
+		elseif getValue(lapSlider) < 1 then lapsTotal = 2 
+		elseif getValue(lapSlider) < 500  then lapsTotal = 3 
 		else
-			maxLapCnt = 4
+			lapsTotal = 4
 		end
 
 		--# chkpoint timer
@@ -401,7 +416,7 @@ local function run()
 		---- Apply Best Lap "Ideal" (SB Up)
 		-----------------------------------------------------
 		if getValue(applySwitch) < 0 and applySwitch_prev == 0 then --SB up applies best lAP
-			applyBestLap()
+			applyBestLaps()
 			applySwitch_prev = -1
 		end
 		
@@ -424,7 +439,7 @@ local function run()
 	local momentarySwitchSecs = 0
 	if getValue(lapSwitch) > 0 then  -- momentary switch pulled
 		if lapSwitch_prev == 0 then
-			applySingleLap()
+			state = applySingleLap(state)
 			if state == STATE_RUNNING then chkStart = getTime()/100 end -- checkpoint reset
 		end
 
@@ -434,10 +449,10 @@ local function run()
 		end
 		-- if user has kept the momentary switch on for 3 sec then reset current run
 		momentarySwitchSecs = (getTime()/100) - resetAppliedTime
-		if momentarySwitchSecs > 3 then 
+		if momentarySwitchSecs > 2 then 
 			resetTimers()
 			resetAppliedTime = 0
-			momentarySwitchSecs = 3
+			momentarySwitchSecs = 2
 		end
 		lapSwitch_prev = 1
 	else				-- momentary switch not pulled
@@ -449,11 +464,11 @@ local function run()
 		------------------------------------------------------
 		-- Every cycle calculations
 		-----------------------------------------------------
-		if curLapCnt > 0 and curLapCnt <= maxLapCnt then
-			curLapTime[curLapCnt] = getTime() - curLapStartTime
-			curThrCnt[curLapCnt] = curThrCnt[curLapCnt] + 1
-			curThrPct[curLapCnt] = curThrPct[curLapCnt] + ((1024 + getValue(throttleChannel))/20.48)
-			curThrAvg[curLapCnt] = curThrPct[curLapCnt] / curThrCnt[curLapCnt]
+		if currentLapNumber > 0 and currentLapNumber <= lapsTotal then
+			curRunLapTimes[currentLapNumber] = getTime() - curLapStartTime
+			curThrCnt[currentLapNumber] = curThrCnt[currentLapNumber] + 1
+			curThrPct[currentLapNumber] = curThrPct[currentLapNumber] + ((1024 + getValue(throttleChannel))/20.48)
+			curThrAvg[currentLapNumber] = curThrPct[currentLapNumber] / curThrCnt[currentLapNumber]
 			curThrCntRun = curThrCnt[1] + curThrCnt[2] + curThrCnt[3] +curThrCnt[4]
 			curThrPctRun = curThrPct[1] + curThrPct[2] + curThrPct[3] +curThrPct[4]
 			curThrAvgRun =  curThrPctRun / curThrCntRun
@@ -466,7 +481,7 @@ local function run()
 			end
 		end
 		
-		curRunTime = curLapTime[1] + curLapTime[2] + curLapTime[3] + curLapTime[4]
+		curRunTime = curRunLapTimes[1] + curRunLapTimes[2] + curRunLapTimes[3] + curRunLapTimes[4]
 	end
 	
 	drawScreen(momentarySwitchSecs)
